@@ -1,0 +1,3 @@
+use this:
+    - ctags -R -e --languages=C,C++ --kinds-C=+plz .
+    - ctags -R -e --languages=C,C++ --kinds-C=+plz --kinds-C++=+plz --fields=+l --extras=+q .
