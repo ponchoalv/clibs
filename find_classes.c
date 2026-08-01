@@ -1,8 +1,6 @@
 #include <dirent.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/dir.h>
-#include <sys/types.h>
 
 #define ARENA_IMPLEMENTATION
 #include "arena.h"
@@ -13,10 +11,10 @@
 #define PCH_DS_IMPLEMENTATION
 #include "pch_ds.h"
 
-void parse_dirs(const char *path, char ***includes, const char *pattern, size_t len, char **ignores,
+static void parse_dirs(const char *path, char ***includes, const char *pattern, size_t len, char **ignores,
                 size_t ignores_len);
 
-static int check_ignores(char *name, char **ignores, size_t len);
+static int check_ignores(const char *name, char **ignores, size_t len);
 
 typedef struct
 {
@@ -24,7 +22,7 @@ typedef struct
     int value;
 } StringMap;
 
-int main(int argc, char **argv)
+int main(const int argc, char **argv)
 {
     Arena arena = arena_create(mega_byte * 256);
     char **includes = NULL;
@@ -55,7 +53,7 @@ int main(int argc, char **argv)
     printf("total matched: %zu\nLines:\n", arrlen(includes));
     for (i = 0; i < arrlen(includes); i++)
     {
-        if ((match = shgetvp(unique, includes[i])) && mfok(unique))
+        if (((match = shgetvp(unique, includes[i]))) && mfok(unique))
         {
             // printf("matched %d\n", *match);
             *match = *match + 1;
@@ -77,7 +75,7 @@ int main(int argc, char **argv)
     printf("total matched: %zu\n", arrlen(includes));
     printf("unique entries: %zu\n", arrlen(unique));
 
-    /* free resrouces */
+    /* free resources */
     for (i = 0; i < arrlen(includes); i++)
     {
         free(includes[i]);
@@ -89,7 +87,7 @@ int main(int argc, char **argv)
     return 0;
 }
 
-static int check_ignores(char *name, char **ignores, size_t len)
+static int check_ignores(const char *name, char **ignores, const size_t len)
 {
     size_t i = 0;
     if (ignores == NULL)
@@ -104,14 +102,13 @@ static int check_ignores(char *name, char **ignores, size_t len)
     return 0;
 }
 
-void parse_dirs(const char *path, char ***includes, const char *pattern, size_t len, char **ignores, size_t ignores_len)
+void parse_dirs(const char *path, char ***includes, const char *pattern, size_t len, char **ignores, const size_t ignores_len)
 {
     Arena ringArena = arena_create(mega_byte * 256);
     struct dirent *dp = NULL;
     char buff[4096];
     char *line = NULL;
     size_t linecap = 0;
-    ssize_t linelen;
     FILE *fd = NULL;
     char **paths = NULL;
 
@@ -140,7 +137,7 @@ void parse_dirs(const char *path, char ***includes, const char *pattern, size_t 
                     fd = fopen(buff, "r");
                     if (fd)
                     {
-                        while ((linelen = getline(&line, &linecap, fd)) > 0)
+                        while (getline(&line, &linecap, fd) > 0)
                         {
                             if (strncmp(line, pattern, len) == 0)
                             {
@@ -150,7 +147,7 @@ void parse_dirs(const char *path, char ***includes, const char *pattern, size_t 
                     }
                     else
                     {
-                        printf("cound't open file %s\n", buff);
+                        printf("couldn't open file %s\n", buff);
                     }
                     if (fd)
                         fclose(fd);
@@ -162,6 +159,7 @@ void parse_dirs(const char *path, char ***includes, const char *pattern, size_t 
                 case DT_LNK:
                 case DT_SOCK:
                 case DT_WHT:
+                default:
                     break;
                 }
             }
