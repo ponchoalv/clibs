@@ -38,7 +38,8 @@ int main(const int argc, char **argv)
         printf("USAGE: ./find_classes <start_with_pattern> <ignores>\n");
         return 1;
     }
-    else if (argc > 2)
+
+    if (argc > 2)
     {
         ignores = argv + 2;
         ignores_len = argc - 2;
