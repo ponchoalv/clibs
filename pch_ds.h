@@ -1089,6 +1089,7 @@ void *pch_map_grow(void *da, size_t item_size, size_t needed, size_t keysize, in
         current_h->count = 0;
         current_h->meta.map.factor = PCH_MAP_INITIAL_FACTOR;
         current_h->meta.map.current = -1;
+        memset(PCH_MAP_SLOTS(new_da), 0, num_buckets * sizeof(pch_map_slot));
     }
 
     return new_da;
@@ -1146,7 +1147,7 @@ void pch_map_put_impl(void *da, const void *key, size_t item_size, size_t keysiz
 {
     pch_ds_hdr *h;
     pch_map_slot *slots;
-    size_t hash, mask, idx, start;
+    size_t hash, mask, idx, start, tombstone = PCH_MAX_IDX;
 
     h = PCH_DS_HDR(da);
     slots = PCH_MAP_SLOTS(da);
@@ -1159,6 +1160,10 @@ void pch_map_put_impl(void *da, const void *key, size_t item_size, size_t keysiz
     /* 2. The Single-Pass Probe */
     while (slots[idx].hash != 0 || slots[idx].tomblestone != 0)
     {
+        if (slots[idx].tomblestone != 0 && tombstone == PCH_MAX_IDX)
+        {
+            tombstone = idx;
+        }
         /* Check if key already exists to update it */
         if (slots[idx].hash == hash)
         {
@@ -1176,7 +1181,12 @@ void pch_map_put_impl(void *da, const void *key, size_t item_size, size_t keysiz
         }
     }
 
-    /* 3. If we are here, we found an empty slot (slots[idx].hash == 0) */
+    /* Reuse a deleted slot only after checking for an existing key. */
+    if (tombstone != PCH_MAX_IDX)
+    {
+        idx = tombstone;
+    }
+    assert(slots[idx].hash == 0);
     slots[idx].hash = hash;
     slots[idx].index = (int)h->count;
     slots[idx].tomblestone = 0;
