@@ -476,7 +476,7 @@ typedef struct
     (assert((idx) < pch_arr_count(da)), ((old_item) = (da)[(idx)]), (da)[(idx)] = (item), old_item)
 
 #define pch_arrforeach(idx, it, da)                                                                                    \
-    for ((idx) = 0, (it) = *((da) + (idx)); (idx) < pch_arr_count(da); (idx)++, (it) = *((da) + (idx)))
+    for ((idx) = 0; (idx) < pch_arr_count(da) && ((it) = (da)[(idx)], 1); ++(idx))
 
 #define pcr_arrclear(da) (PCH_DS_HDR(da)->count = 0)
 
@@ -774,11 +774,18 @@ void *pch_slice_to_arr(pch_slice s, void *new_da, size_t item_size, void *arena)
 
 void *pch_da_clone(void *from, void *to, size_t item_size, void *arena)
 {
-    to = pch_ds_grow(to, item_size, pch_arr_count(from), arena);
-    memcpy(to, PCH_DS_HDR(from), sizeof(pch_ds_hdr) + pch_arr_count(from) * item_size);
-
-    to = (pch_ds_hdr *)to + 1;
-
+    size_t count = pch_arr_count(from);
+    to = pch_ds_grow(to, item_size, count, arena);
+    if (from && from != to)
+    {
+        pch_ds_hdr *header = PCH_DS_HDR(to);
+        size_t capacity = header->capacity;
+        void *destination_arena = header->arena;
+        memcpy(header, PCH_DS_HDR(from), sizeof(*header) + count * item_size);
+        header->capacity = capacity;
+        header->arena = destination_arena;
+    }
+    PCH_DS_HDR(to)->count = count;
     return to;
 }
 

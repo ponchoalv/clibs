@@ -33,6 +33,53 @@ int main(void)
     Entry *map = NULL;
     int first = 0, second = 8, fixed = 1000, moving = 0, next;
 
+    /* Array iteration and cloning must respect bounds and allocation ownership. */
+    {
+        int *values = NULL, *copy = NULL, *empty = NULL, *original_copy;
+        int source_arena = 0, destination_arena = 0;
+        int value = -1, visits = 0;
+        size_t i;
+
+        arrforeach(i, value, values) { ++visits; }
+        assert(visits == 0 && value == -1);
+        arrinit(values, &source_arena);
+        arrforeach(i, value, values) { ++visits; }
+        assert(visits == 0 && value == -1);
+        arrpush(values, 0);
+        arrforeach(i, value, values)
+        {
+            assert(i == 0 && value == 0);
+            ++visits;
+        }
+        assert(visits == 1);
+
+        arrsetcap(values, 64);
+        PCH_DS_HDR(values)->meta.ring.head = 7;
+        PCH_DS_HDR(values)->meta.ring.tail = 11;
+        arrclone(values, copy, &destination_arena);
+        assert(arrlen(copy) == 1 && arrcap(copy) == 1 && copy[0] == 0);
+        assert(PCH_DS_HDR(copy)->arena == &destination_arena);
+        assert(PCH_DS_HDR(copy)->meta.ring.head == 7 && PCH_DS_HDR(copy)->meta.ring.tail == 11);
+        original_copy = copy;
+        arrclone(copy, copy, &destination_arena);
+        assert(copy == original_copy && arrlen(copy) == 1 && copy[0] == 0);
+
+        arrpush(copy, 42);
+        arrclone(copy, values, &source_arena);
+        assert(arrlen(values) == 2 && arrcap(values) == 64);
+        assert(PCH_DS_HDR(values)->arena == &source_arena);
+        assert(values[0] == 0 && values[1] == 42);
+        arrclone(empty, copy, &destination_arena);
+        assert(arrlen(copy) == 0 && arrcap(copy) == 2);
+        assert(PCH_DS_HDR(copy)->arena == &destination_arena);
+        arrclone(values, copy, &destination_arena);
+        assert(arrlen(copy) == 2 && copy[0] == 0 && copy[1] == 42);
+        arrforeach(i, value, copy) { assert(value == (i == 0 ? 0 : 42)); }
+        assert(i == 2);
+        arrfree(values);
+        arrfree(copy);
+    }
+
     /* Fresh maps must work with memory that was not already zeroed. */
     bhinit(map, NULL);
     bhput(map, first, 10);
@@ -61,6 +108,6 @@ int main(void)
         moving = next;
     }
     mfree(map);
-    puts("pch_ds hash-map regression checks passed.");
+    puts("pch_ds regression checks passed.");
     return 0;
 }
