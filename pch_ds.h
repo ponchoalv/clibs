@@ -631,10 +631,10 @@ For example:
     (&(da)[(pch_map_find_with_default_idx((da), &(k), sizeof(*(da)), sizeof(k), (PCH_MAP_BINARY_MODE)))])
 
 #define pch_bhgetvp(da, k)                                                                                             \
-    (&(da)[pch_map_find_with_default_idx((da), (k), sizeof(*(da)), 0, (PCH_MAP_BINARY_MODE))].value)
+    (&(da)[pch_map_find_with_default_idx((da), &(k), sizeof(*(da)), 0, (PCH_MAP_BINARY_MODE))].value)
 
 #define pch_bhgetkp(da, k)                                                                                             \
-    (&(da)[(pch_map_find_with_default_idx((da), (k), sizeof(*(da)), 0, (PCH_MAP_BINARY_MODE)))].key)
+    (&(da)[(pch_map_find_with_default_idx((da), &(k), sizeof(*(da)), 0, (PCH_MAP_BINARY_MODE)))].key)
 
 /* String Get: k is the char* */
 #define pch_shget(da, k)                                                                                               \
