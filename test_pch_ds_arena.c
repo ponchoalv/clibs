@@ -1,6 +1,16 @@
 #include <assert.h>
+#include <stdlib.h>
 #include <string.h>
 
+static int fail_allocation;
+
+static void *test_allocate(size_t size)
+{
+    return fail_allocation ? NULL : malloc(size);
+}
+
+#define PCH_ARENA_MALLOC test_allocate
+#define PCH_ARENA_FREE free
 #define PCH_ARENA_IMPLEMENTATION
 #define PCH_DS_IMPLEMENTATION
 #define PCH_DS_USE_ARENA
@@ -87,6 +97,37 @@ static void check_collections(PchArena *arena)
     assert(!numbers && !queue && !integers && !strings && !heap);
 }
 
+static void check_reserve(void)
+{
+    PchArena arena = { 0 }, moved;
+    int *array = NULL, *grown;
+    size_t initial_capacity;
+
+    fail_allocation = 1;
+    assert(!arrtryres(array, 8, &arena));
+    fail_allocation = 0;
+    array = arrtryres(array, 8, &arena);
+    assert(pch_arr_arena(array) == &arena && !arrlen(array));
+    arrpush(array, 42);
+    initial_capacity = arrcap(array);
+    assert(arrtryres(array, initial_capacity, &arena) == array);
+
+    fail_allocation = 1;
+    assert(!arrtryres(array, 65536, &arena));
+    assert(!arrtryres(array, (size_t)-1, &arena));
+    assert(array[0] == 42 && arrlen(array) == 1 && arrcap(array) == initial_capacity);
+    fail_allocation = 0;
+
+    moved = arena;
+    arrrebind(array, &moved);
+    assert(pch_arr_arena(array) == &moved);
+    grown = arrtryres(array, 65536, &moved);
+    assert(grown && grown[0] == 42 && arrlen(grown) == 1 && arrcap(grown) >= 65536);
+    arrpush(grown, 17);
+    assert(grown[1] == 17 && arrlen(grown) == 2);
+    pch_arena_destroy(&moved);
+}
+
 int main(void)
 {
     PchArena arena = { 0 };
@@ -98,5 +139,6 @@ int main(void)
     check_collections(&arena);
     pch_arena_destroy(&arena);
     assert(!arena.first);
+    check_reserve();
     return 0;
 }

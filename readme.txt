@@ -31,9 +31,14 @@ PCH_DS_IMPLEMENTATION in one translation unit each, as usual.
 
 Pass a pointer to a zero-initialized PchArena to arrinit, rinit,
 bhinit, shinit or pqinit. Passing NULL uses the heap, so arena-backed and
-heap-backed collections can coexist. Keep the arena at the same
-address while pch_ds collections reference it. Growth preserves the
-collection's contents and can change the collection's address.
+heap-backed collections can coexist. If you move an arena that owns
+arrays, call arrrebind(array, &moved_arena) before accessing them.
+Growth preserves the collection's contents and can change its address.
+
+arrtryres(array, capacity, arena) returns a pointer to the array with
+the requested capacity or NULL on allocation failure. Assign the
+result only after checking it. Pass the existing allocator for a live
+array. The element count stays the same.
 
 arrfree, rfree and mfree clear the handle. Reset the arena to reuse
 storage, or destroy it to free storage. Reinitialize collection handles

@@ -231,6 +231,48 @@ thread safe)
 
 */
 
+/* Priority queue example. A negative comparator result puts a job first.
+
+#include <stdio.h>
+#define PCH_ARENA_IMPLEMENTATION
+#define PCH_DS_USE_ARENA
+#define PCH_DS_IMPLEMENTATION
+#include "pch_ds.h"
+
+typedef struct {
+    const char *name;
+    int priority;
+} Job;
+
+static int compare_jobs(const void *left, const void *right)
+{
+    const Job *a = left, *b = right;
+    return (a->priority > b->priority) - (a->priority < b->priority);
+}
+
+int main(void)
+{
+    PchArena arena = { 0 };
+    Job *queue = NULL;
+    Job normal = { "normal", 3 }, later = { "later", 5 }, urgent = { "urgent", 1 };
+    Job job;
+    int ok = pqinit(queue, &arena, compare_jobs) && pqpush(queue, normal) &&
+             pqpush(queue, later) && pqpush(queue, urgent);
+
+    if (ok) {
+        while (pqpop(queue, &job)) printf("%s (%d)\n", job.name, job.priority);
+    }
+    pqfree(queue);
+    pch_arena_destroy(&arena);
+    return !ok;
+}
+
+Expected output:
+urgent (1)
+normal (3)
+later (5)
+*/
+
 #ifndef INCLUDE_PCH_DS_H_
 #define INCLUDE_PCH_DS_H_
 #include <assert.h>
@@ -243,6 +285,8 @@ thread safe)
 /* Dynamic arrays */
 #define arrinit pch_arrinit
 #define arrmres pch_arrmres
+#define arrtryres pch_arr_try_reserve
+#define arrrebind pch_arr_rebind
 #define arrfree pch_arrfree
 #define arrpush pch_arrpush
 #define arrpushn pch_arrpushn
@@ -502,6 +546,12 @@ typedef struct
 
 #define pch_arrmres(da, len, arena_ptr) ((da) = pch_ds_grow((da), sizeof(*(da)), (len), (arena_ptr)))
 
+/* Returns NULL on failure. Assign the returned pointer only on success. */
+#define pch_arr_try_reserve(da, len, arena_ptr) pch_ds_try_grow((da), sizeof(*(da)), (len), (arena_ptr))
+
+/* Update the allocator address after moving its state, before using the array. */
+#define pch_arr_rebind(da, arena_ptr) ((void)((da) ? (PCH_DS_HDR(da)->arena = (arena_ptr)) : NULL))
+
 #define pch_arrsetcap(da, cap) ((da) = pch_ds_grow((da), sizeof(*(da)), (cap), pch_arr_arena(da)))
 
 #define pch_arrreplace(da, idx, item, old_item)                                                                        \
@@ -732,6 +782,7 @@ For example:
 #define pch_mfree(da) ((void)((da) ? PCH_FREE(pch_arr_arena(da), PCH_DS_HDR(da)) : (void)0), (da) = NULL)
 
 void *pch_ds_grow(void *da, size_t item_size, size_t needed, void *arena_ptr);
+void *pch_ds_try_grow(void *da, size_t item_size, size_t needed, void *arena_ptr);
 void *pch_pq_new(size_t item_size, void *arena, pch_pq_cmp cmp);
 void *pch_pq_grow(void *queue, size_t item_size, size_t needed);
 void pch_pq_pushed(void *queue, size_t item_size);
@@ -765,7 +816,7 @@ static size_t pch_next_pow2(size_t n, size_t init)
     return n + 1;
 }
 
-static void *pch_ds_try_grow(void *da, size_t item_size, size_t needed, void *arena_ptr)
+void *pch_ds_try_grow(void *da, size_t item_size, size_t needed, void *arena_ptr)
 {
     size_t cap = pch_arr_capacity(da);
     size_t total_size;
