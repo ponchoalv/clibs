@@ -25,9 +25,21 @@ Build the standalone test with:
 Using a growable arena with pch_ds.h
 -----------------------------------
 
-Define PCH_DS_USE_ARENA before including pch_ds.h in each translation
-unit that uses pch_ds. Define PCH_ARENA_IMPLEMENTATION and
-PCH_DS_IMPLEMENTATION in one translation unit each, as usual.
+Put pch_arena.h next to pch_ds.h. Add this setup to one .c file.
+
+  #define PCH_ARENA_IMPLEMENTATION
+  #define PCH_DS_IMPLEMENTATION
+  #define PCH_DS_USE_ARENA
+  #include "pch_ds.h"
+
+pch_ds.h includes pch_arena.h automatically in this mode. In other .c
+files, define PCH_DS_USE_ARENA before including pch_ds.h. PchArena uses
+malloc and free by default. Define both PCH_ARENA_MALLOC and PCH_ARENA_FREE
+before including the implementation to customize block allocation.
+
+arena.h remains available for existing code using the original,
+fixed-capacity Arena. PCH_DS_USE_ARENA selects the growable PchArena.
+To use the original Arena with pch_ds, use the custom hooks below.
 
 Pass a pointer to a zero-initialized PchArena to arrinit, rinit,
 bhinit, shinit or pqinit. Passing NULL uses the heap, so arena-backed and
