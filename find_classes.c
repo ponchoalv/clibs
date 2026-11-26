@@ -5,8 +5,9 @@
 #define ARENA_IMPLEMENTATION
 #include "arena.h"
 
-#define PCH_REALLOC(A, P, N) (A) == NULL ? realloc(P, N) : arena_realloc(A, P, N, sizeof(void *))
-#define PCH_FREE(A, P) (A) == NULL ? free(P) : ((void)0)
+#define PCH_REALLOC(A, P, N) \
+    ((A) ? arena_realloc((A), (P), (N), (long)PCH_DS_ALLOC_ALIGNMENT) : realloc((P), (N)))
+#define PCH_FREE(A, P) ((A) ? (void)0 : free(P))
 
 #define PCH_DS_IMPLEMENTATION
 #include "pch_ds.h"

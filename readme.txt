@@ -47,6 +47,18 @@ before using them again after a reset.
 Build the integration test with:
   cc -std=gnu89 -Wall -Wextra -Werror test_pch_ds_arena.c -o test_pch_ds_arena
 
+Custom allocators (pch_ds.h)
+---------------------------
+
+Define PCH_REALLOC and PCH_FREE to use a custom allocator such as Arena
+from arena.h. The opaque context still passes through as void *.
+Align the returned allocation to PCH_DS_ALLOC_ALIGNMENT. This constant
+uses offsetof to account for the compiler's layout of the collection
+header. The example in pch_ds.h shows the hooks for Arena.
+
+Build the legacy Arena integration test with:
+  cc -std=gnu89 -Wall -Wextra -Werror test_pch_ds_custom_allocator.c -o test_pch_ds_custom_allocator
+
 Priority queues (pch_ds.h)
 --------------------------
 
