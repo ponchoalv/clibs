@@ -231,6 +231,48 @@ thread safe)
 
 */
 
+/* Priority queue example. A negative comparator result puts a job first.
+
+#include <stdio.h>
+#define PCH_ARENA_IMPLEMENTATION
+#define PCH_DS_USE_ARENA
+#define PCH_DS_IMPLEMENTATION
+#include "pch_ds.h"
+
+typedef struct {
+    const char *name;
+    int priority;
+} Job;
+
+static int compare_jobs(const void *left, const void *right)
+{
+    const Job *a = left, *b = right;
+    return (a->priority > b->priority) - (a->priority < b->priority);
+}
+
+int main(void)
+{
+    PchArena arena = { 0 };
+    Job *queue = NULL;
+    Job normal = { "normal", 3 }, later = { "later", 5 }, urgent = { "urgent", 1 };
+    Job job;
+    int ok = pqinit(queue, &arena, compare_jobs) && pqpush(queue, normal) &&
+             pqpush(queue, later) && pqpush(queue, urgent);
+
+    if (ok) {
+        while (pqpop(queue, &job)) printf("%s (%d)\n", job.name, job.priority);
+    }
+    pqfree(queue);
+    pch_arena_destroy(&arena);
+    return !ok;
+}
+
+Expected output:
+urgent (1)
+normal (3)
+later (5)
+*/
+
 #ifndef INCLUDE_PCH_DS_H_
 #define INCLUDE_PCH_DS_H_
 #include <assert.h>
@@ -243,6 +285,8 @@ thread safe)
 /* Dynamic arrays */
 #define arrinit pch_arrinit
 #define arrmres pch_arrmres
+#define arrtryres pch_arr_try_reserve
+#define arrrebind pch_arr_rebind
 #define arrfree pch_arrfree
 #define arrpush pch_arrpush
 #define arrpushn pch_arrpushn
@@ -268,6 +312,20 @@ thread safe)
 #define arrclone pch_arr_clone
 #define arrheappush pch_arrheappush
 #define arrheappop pch_arrheappop
+
+/* Priority queue */
+#define pqinit pch_pqinit
+#define pqreserve pch_pqreserve
+#define pqpush pch_pqpush
+#define pqpeek pch_pqpeek
+#define pqpop pch_pqpop
+#define pqremove pch_pqremove
+#define pqfix pch_pqfix
+#define pqlen pch_pqlen
+#define pqcap pch_pqcap
+#define pqempty pch_pqempty
+#define pqclear pch_pqclear
+#define pqfree pch_pqfree
 
 /* Ring Buffer */
 #define rinit pch_rinit
@@ -367,6 +425,15 @@ thread safe)
 #define PCH_MAP_BINARY_MODE 0
 #define PCH_MAP_STRING_MODE 1
 
+#ifdef PCH_DS_USE_ARENA
+#if defined(PCH_REALLOC) || defined(PCH_FREE)
+#error "PCH_DS_USE_ARENA and custom allocator hooks are mutually exclusive."
+#endif
+#include "pch_arena.h"
+#define PCH_REALLOC(A, P, N) pch_arena_realloc((A), (P), (N))
+#define PCH_FREE(A, P) pch_arena_free((A), (P))
+#endif
+
 #if defined(PCH_REALLOC) && !defined(PCH_FREE) || !defined(PCH_REALLOC) && defined(PCH_FREE)
 #error "You must define both PCH_REALLOC and PCH_FREE, or neither."
 #endif
@@ -376,6 +443,9 @@ thread safe)
 #define PCH_FREE(A, P) free(P)
 #endif
 
+/* A negative result means the first element comes out before the second. */
+typedef int (*pch_pq_cmp)(const void *, const void *);
+
 /* STB like header stuff */
 typedef struct
 {
@@ -383,6 +453,8 @@ typedef struct
     size_t count;
     size_t capacity;
     union {
+        /* Keep typed elements after the header aligned. */
+        long double alignment;
         struct
         {
             size_t head;
@@ -394,6 +466,10 @@ typedef struct
             int factor;
             int current;
         } map;
+        struct
+        {
+            pch_pq_cmp cmp;
+        } priority;
     } meta;
 } pch_ds_hdr;
 
@@ -470,6 +546,12 @@ typedef struct
 
 #define pch_arrmres(da, len, arena_ptr) ((da) = pch_ds_grow((da), sizeof(*(da)), (len), (arena_ptr)))
 
+/* Returns NULL on failure. Assign the returned pointer only on success. */
+#define pch_arr_try_reserve(da, len, arena_ptr) pch_ds_try_grow((da), sizeof(*(da)), (len), (arena_ptr))
+
+/* Update the allocator address after moving its state, before using the array. */
+#define pch_arr_rebind(da, arena_ptr) ((void)((da) ? (PCH_DS_HDR(da)->arena = (arena_ptr)) : NULL))
+
 #define pch_arrsetcap(da, cap) ((da) = pch_ds_grow((da), sizeof(*(da)), (cap), pch_arr_arena(da)))
 
 #define pch_arrreplace(da, idx, item, old_item)                                                                        \
@@ -492,6 +574,31 @@ typedef struct
     for ((i) = 0; (i) < (slice).count && ((val) = ((type *)(slice).items)[(i)], 1); ++(i))
 
 #define pch_arr_clone(from, to, arena) ((to) = pch_da_clone((from), (to), sizeof(*(to)), (arena)))
+
+/* Pass a typed pointer lvalue initialized to NULL. NULL arena uses the default
+ * allocator. The comparator has the same signature and ordering as qsort. */
+#define pch_pqinit(q, arena_ptr, cmp)                                                                                  \
+    ((q) ? (q) : ((q) = pch_pq_new(sizeof(*(q)), (arena_ptr), (cmp))))
+
+/* Returns the current handle. On failure the queue and capacity are unchanged. */
+#define pch_pqreserve(q, needed) ((q) = pch_pq_grow((q), sizeof(*(q)), (needed)))
+
+/* Returns 0 if the queue is uninitialized or storage cannot grow. */
+#define pch_pqpush(q, item)                                                                                           \
+    (pch_pqreserve((q), pch_arr_count(q) + 1),                                                                         \
+     ((q) && pch_arr_count(q) < pch_arr_capacity(q))                                                                   \
+         ? ((q)[pch_arr_count(q)] = (item), pch_pq_pushed((q), sizeof(*(q))), 1)                                        \
+         : 0)
+
+#define pch_pqpeek(q) (pch_arr_count(q) ? &(q)[0] : NULL)
+#define pch_pqpop(q, output) pch_pq_remove((q), sizeof(*(q)), 0, (output))
+#define pch_pqremove(q, index, output) pch_pq_remove((q), sizeof(*(q)), (index), (output))
+#define pch_pqfix(q, index) pch_pq_fix((q), sizeof(*(q)), (index))
+#define pch_pqlen(q) pch_arr_count(q)
+#define pch_pqcap(q) ((q) ? pch_arr_capacity(q) : (size_t)0)
+#define pch_pqempty(q) pch_arrempty(q)
+#define pch_pqclear(q) ((void)((q) ? (PCH_DS_HDR(q)->count = 0) : 0))
+#define pch_pqfree(q) pch_arrfree(q)
 
 /* Comparator: Returns true if A is "better" (smaller f) than B
 For example:
@@ -674,8 +781,13 @@ For example:
 
 #define pch_mfree(da) ((void)((da) ? PCH_FREE(pch_arr_arena(da), PCH_DS_HDR(da)) : (void)0), (da) = NULL)
 
-static size_t pch_next_pow2(size_t n, size_t init);
 void *pch_ds_grow(void *da, size_t item_size, size_t needed, void *arena_ptr);
+void *pch_ds_try_grow(void *da, size_t item_size, size_t needed, void *arena_ptr);
+void *pch_pq_new(size_t item_size, void *arena, pch_pq_cmp cmp);
+void *pch_pq_grow(void *queue, size_t item_size, size_t needed);
+void pch_pq_pushed(void *queue, size_t item_size);
+int pch_pq_remove(void *queue, size_t item_size, size_t index, void *output);
+int pch_pq_fix(void *queue, size_t item_size, size_t index);
 void *pch_ring_grow(void *ptr, size_t item_size, size_t needed, void *arena_ptr);
 void *pch_map_clear(void *da);
 int pch_map_del(void *da, size_t item_size, const void *key, size_t keysize, int mode);
@@ -695,47 +807,156 @@ void pch_map_put_impl(void *da, const void *key, size_t item_size, size_t keysiz
 
 static size_t pch_next_pow2(size_t n, size_t init)
 {
+    size_t shift;
     if (n == 0)
         return init;
     n--;
-    n |= n >> 1;
-    n |= n >> 2;
-    n |= n >> 4;
-    n |= n >> 8;
-    n |= n >> 16;
-    if (sizeof(size_t) > 4)
-        n |= n >> 32;
-    n++;
-    return n;
+    for (shift = 1; shift < sizeof(n) * CHAR_BIT; shift *= 2)
+        n |= n >> shift;
+    return n + 1;
 }
 
-void *pch_ds_grow(void *da, size_t item_size, size_t needed, void *arena_ptr)
+void *pch_ds_try_grow(void *da, size_t item_size, size_t needed, void *arena_ptr)
 {
     size_t cap = pch_arr_capacity(da);
     size_t total_size;
     void *h;
     pch_ds_hdr *hdr;
+    int had_data = da != NULL;
 
     if (da != NULL && needed <= cap)
         return da;
 
     cap = pch_next_pow2(needed, PCH_INIT_CAP);
+    if (!item_size || cap < needed || cap > (PCH_MAX_IDX - sizeof(*hdr)) / item_size)
+        return NULL;
 
     /* Calculate total size: Header + Data */
     total_size = sizeof(pch_ds_hdr) + (cap * item_size);
 
     h = PCH_REALLOC(arena_ptr, da ? PCH_DS_HDR(da) : NULL, total_size);
-    assert(h != NULL && "No more ram for you");
+    if (!h)
+        return NULL;
 
     hdr = (pch_ds_hdr *)h;
     hdr->capacity = cap;
-    if (!da)
+    if (!had_data)
     {
         hdr->count = 0;
         hdr->arena = arena_ptr;
     }
 
     return (void *)(hdr + 1);
+}
+
+void *pch_ds_grow(void *da, size_t item_size, size_t needed, void *arena_ptr)
+{
+    void *result = pch_ds_try_grow(da, item_size, needed, arena_ptr);
+    assert(result != NULL && "No more ram for you");
+    return result;
+}
+
+void *pch_pq_new(size_t item_size, void *arena, pch_pq_cmp cmp)
+{
+    void *queue;
+    if (!cmp)
+        return NULL;
+    queue = pch_ds_try_grow(NULL, item_size, PCH_INIT_CAP, arena);
+    if (queue)
+        PCH_DS_HDR(queue)->meta.priority.cmp = cmp;
+    return queue;
+}
+
+void *pch_pq_grow(void *queue, size_t item_size, size_t needed)
+{
+    void *grown;
+    if (!queue || needed <= pch_arr_capacity(queue))
+        return queue;
+    grown = pch_ds_try_grow(queue, item_size, needed, pch_arr_arena(queue));
+    return grown ? grown : queue;
+}
+
+static void pch_pq_swap(char *a, char *b, size_t size)
+{
+    char scratch[64];
+    size_t chunk;
+    while (size)
+    {
+        chunk = size < sizeof(scratch) ? size : sizeof(scratch);
+        memcpy(scratch, a, chunk);
+        memcpy(a, b, chunk);
+        memcpy(b, scratch, chunk);
+        a += chunk;
+        b += chunk;
+        size -= chunk;
+    }
+}
+
+static void pch_pq_sift_up(char *items, size_t size, size_t index, pch_pq_cmp cmp)
+{
+    size_t parent;
+    while (index)
+    {
+        parent = (index - 1) / 2;
+        if (cmp(items + index * size, items + parent * size) >= 0)
+            break;
+        pch_pq_swap(items + index * size, items + parent * size, size);
+        index = parent;
+    }
+}
+
+static int pch_pq_sift_down(char *items, size_t size, size_t count, size_t index, pch_pq_cmp cmp)
+{
+    size_t child, original = index;
+    while (index < count / 2)
+    {
+        child = 2 * index + 1;
+        if (child + 1 < count && cmp(items + (child + 1) * size, items + child * size) < 0)
+            ++child;
+        if (cmp(items + child * size, items + index * size) >= 0)
+            break;
+        pch_pq_swap(items + child * size, items + index * size, size);
+        index = child;
+    }
+    return index != original;
+}
+
+void pch_pq_pushed(void *queue, size_t item_size)
+{
+    pch_ds_hdr *header = PCH_DS_HDR(queue);
+    size_t index = header->count++;
+    pch_pq_sift_up(queue, item_size, index, header->meta.priority.cmp);
+}
+
+int pch_pq_fix(void *queue, size_t item_size, size_t index)
+{
+    pch_ds_hdr *header;
+    pch_pq_cmp cmp;
+    if (index >= pch_arr_count(queue))
+        return 0;
+    header = PCH_DS_HDR(queue);
+    cmp = header->meta.priority.cmp;
+    if (!pch_pq_sift_down(queue, item_size, header->count, index, cmp))
+        pch_pq_sift_up(queue, item_size, index, cmp);
+    return 1;
+}
+
+int pch_pq_remove(void *queue, size_t item_size, size_t index, void *output)
+{
+    char *items = queue, *item;
+    size_t last;
+    if (index >= pch_arr_count(queue))
+        return 0;
+    item = items + index * item_size;
+    if (output)
+        memcpy(output, item, item_size);
+    last = --PCH_DS_HDR(queue)->count;
+    if (index != last)
+    {
+        memcpy(item, items + last * item_size, item_size);
+        pch_pq_fix(queue, item_size, index);
+    }
+    return 1;
 }
 
 pch_slice pch_slice_from_array(void *da, size_t total_count, size_t item_size, size_t start, size_t requested_len)
@@ -800,6 +1021,7 @@ void *pch_ring_grow(void *da, size_t item_size, size_t needed, void *arena_ptr)
     size_t head;
     size_t tail;
     size_t total_bytes;
+    int had_data = da != NULL;
 
     old_hdr = (da != NULL) ? PCH_DS_HDR(da) : NULL;
     old_cap = pch_arr_capacity(da);
@@ -822,7 +1044,7 @@ void *pch_ring_grow(void *da, size_t item_size, size_t needed, void *arena_ptr)
     new_ptr = (void *)((char *)new_hdr + sizeof(pch_ds_hdr));
     new_hdr->capacity = new_cap;
 
-    if (old_hdr == NULL)
+    if (!had_data)
     {
         new_hdr->arena = arena_ptr;
         new_hdr->count = 0;
@@ -874,117 +1096,29 @@ size_t pch_update_ring_tail(void *da)
 
 /* Map Stuff starts here */
 
-// static size_t pch_hash_string(const char *str)
-// {
-//     size_t hash = PCH_FNV_OFFSET;
-
-//     while (*str)
-//     {
-//         hash ^= (size_t)(*str++);
-//         hash *= PCH_FNV_PRIME;
-//     }
-
-//     return (hash == 0) ? 1 : hash;
-// }
-
-static size_t pch_hash_string_fast(const char *str)
+static size_t pch_hash_bytes_fast(const void *data, size_t length)
 {
-    const size_t *word_ptr;
+    const unsigned char *bytes = data;
     size_t hash = PCH_FNV_OFFSET;
     size_t word;
 
-    /* 1. Handle unaligned preamble (optional but safer)
-     * If you want absolute raw speed and are on x64, you can skip this
-     * and cast directly, provided you don't crash on page boundaries.
-     * For safety, usually we consume bytes until aligned.
-     */
-    while (((size_t)str) & (sizeof(size_t) - 1))
+    while (length >= sizeof(word))
     {
-        if (!*str)
-            return (hash == 0) ? 1 : hash;
-        hash ^= (size_t)(*str++);
-        hash *= PCH_FNV_PRIME;
+        memcpy(&word, bytes, sizeof(word));
+        hash = (hash ^ word) * PCH_FNV_PRIME;
+        bytes += sizeof(word);
+        length -= sizeof(word);
     }
 
-    /* 2. Main Loop: Process 4 or 8 bytes at a time */
-    word_ptr = (const size_t *)str;
+    while (length--)
+        hash = (hash ^ *bytes++) * PCH_FNV_PRIME;
 
-    while (1)
-    {
-        word = *word_ptr; // Fetch next word
-
-        /* Check if this word contains a \0 terminator */
-        if (HAS_ZERO(word))
-        {
-            /* Found the end! Break to handle the final bytes */
-            break;
-        }
-
-        /* No null terminator, hash the whole word */
-        hash ^= word;
-        hash *= PCH_FNV_PRIME;
-        word_ptr++;
-    }
-
-    /* 3. Handle the final bytes (tail) */
-    /* We know the null terminator is inside 'word', need to find where */
-    str = (const char *)word_ptr;
-    while (*str)
-    {
-        hash ^= (size_t)(*str++);
-        hash *= PCH_FNV_PRIME;
-    }
-
-    return (hash == 0) ? 1 : hash;
+    return hash ? hash : 1;
 }
 
-// static size_t pch_hash_bytes(const void *da, size_t len)
-// {
-//     const unsigned char *p = (const unsigned char *)da;
-//     size_t hash = PCH_FNV_OFFSET;
-//     size_t i;
-
-//     for (i = 0; i < len; ++i)
-//     {
-//         hash ^= (size_t)p[i];
-//         hash *= PCH_FNV_PRIME;
-//     }
-//     return (hash == 0) ? 1 : hash;
-// }
-
-/* * A very fast word-at-a-time hash (similar to FxHash).
- * Much faster than FNV because it consumes sizeof(size_t) bytes per step.
- */
-static size_t pch_hash_bytes_fast(const void *da, size_t len)
+static size_t pch_hash_string_fast(const char *text)
 {
-    const size_t *words = (const size_t *)da;
-    const unsigned char *p;
-    size_t hash = PCH_FNV_OFFSET;
-    size_t word_count = len / sizeof(size_t);
-    size_t i;
-
-    /* 1. Process standard word-sized chunks */
-    for (i = 0; i < word_count; ++i)
-    {
-        /* * Combine the hash with the whole word.
-         * Using a rotate here (if available) is even better,
-         * but standard XOR-MUL is very fast.
-         */
-        hash ^= words[i];
-        hash *= PCH_FNV_PRIME;
-    }
-
-    /* 2. Handle remaining bytes (the "tail") */
-    p = (const unsigned char *)(words + word_count);
-    i = len % sizeof(size_t);
-
-    while (i--)
-    {
-        hash ^= (size_t)(*p++);
-        hash *= PCH_FNV_PRIME;
-    }
-
-    return (hash == 0) ? 1 : hash;
+    return pch_hash_bytes_fast(text, strlen(text));
 }
 
 static int pch_is_key_equal(void *da, const void *key, size_t item_size, size_t keysize, int mode, int index)
@@ -994,7 +1128,8 @@ static int pch_is_key_equal(void *da, const void *key, size_t item_size, size_t 
     if (mode >= PCH_MAP_STRING_MODE)
     {
         const char *search_key = (const char *)key;
-        const char *entry_key = *(const char **)entry;
+        const char *entry_key;
+        memcpy(&entry_key, entry, sizeof(entry_key));
         return (entry_key && search_key) ? 0 == (strcmp(search_key, entry_key)) : 0;
     }
     else
@@ -1005,10 +1140,13 @@ static int pch_is_key_equal(void *da, const void *key, size_t item_size, size_t 
 
 static size_t pch_hash_fn(const void *ptr, size_t keysize, int mode)
 {
+    const char *key;
     if (mode >= PCH_MAP_STRING_MODE)
-        return pch_hash_string_fast(*(char **)ptr);
-    else
-        return pch_hash_bytes_fast(ptr, keysize);
+    {
+        memcpy(&key, ptr, sizeof(key));
+        return pch_hash_string_fast(key);
+    }
+    return pch_hash_bytes_fast(ptr, keysize);
 }
 
 static void pch_map_rehash(void *da, size_t item_size, size_t keysize, int mode)
@@ -1059,6 +1197,7 @@ void *pch_map_grow(void *da, size_t item_size, size_t needed, size_t keysize, in
     size_t total_size;
     void *new_da;
     void *h;
+    int had_data = da != NULL;
 
     new_cap = (needed < PCH_MAP_INIT_CAP) ? PCH_MAP_INIT_CAP : needed;
     new_cap = pch_next_pow2(new_cap, PCH_MAP_INIT_CAP);
@@ -1086,7 +1225,7 @@ void *pch_map_grow(void *da, size_t item_size, size_t needed, size_t keysize, in
     current_h->meta.map.current = -1;
 
     /* 5. Rehash if old data exists */
-    if (da)
+    if (had_data)
     {
         pch_map_rehash(new_da, item_size, keysize, mode);
     }
@@ -1263,33 +1402,24 @@ int pch_map_del(void *da, size_t item_size, const void *key, size_t keysize, int
     }
     else
     {
-        memmove((char *)da + item_size * i, (char *)da + item_size * final_index, item_size);
-        hash = (mode >= PCH_MAP_STRING_MODE) ? pch_hash_string_fast(*(char **)((char *)da + item_size * i))
-                                             : pch_hash_bytes_fast((char *)da + item_size * i, keysize);
+        char *last = (char *)da + item_size * final_index;
+        hash = pch_hash_fn(last, keysize, mode);
         idx = hash & mask;
+        start = idx;
 
-        while (slots[idx].hash != 0 || slots[idx].tomblestone != 0)
+        do
         {
-            if (slots[idx].hash == hash)
+            if (slots[idx].hash == hash && slots[idx].index == final_index)
             {
-                if ((mode >= PCH_MAP_STRING_MODE)
-                        ? pch_is_key_equal(da, *(char **)(char *)da + item_size * i, item_size, keysize, mode,
-                                           slots[idx].index)
-                        : pch_is_key_equal(da, (char *)da + item_size * i, item_size, keysize, mode, slots[idx].index))
-                {
-                    /* i = slots[idx].index; */
-                    slots[idx].index = i;
-                    /* slots[idx].hash = hash; */
-                    h->count--;
-                    return 1;
-                }
+                memcpy((char *)da + item_size * i, last, item_size);
+                slots[idx].index = i;
+                h->count--;
+                return 1;
             }
             idx = (idx + 1) & mask;
-        }
+        } while (idx != start && (slots[idx].hash || slots[idx].tomblestone));
     }
 
-    printf("we reach unreachable\n");
-    /* Shouldn't be reach */
     return 0;
 }
 
