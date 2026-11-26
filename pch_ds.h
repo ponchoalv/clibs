@@ -269,6 +269,20 @@ thread safe)
 #define arrheappush pch_arrheappush
 #define arrheappop pch_arrheappop
 
+/* Priority queue */
+#define pqinit pch_pqinit
+#define pqreserve pch_pqreserve
+#define pqpush pch_pqpush
+#define pqpeek pch_pqpeek
+#define pqpop pch_pqpop
+#define pqremove pch_pqremove
+#define pqfix pch_pqfix
+#define pqlen pch_pqlen
+#define pqcap pch_pqcap
+#define pqempty pch_pqempty
+#define pqclear pch_pqclear
+#define pqfree pch_pqfree
+
 /* Ring Buffer */
 #define rinit pch_rinit
 #define rempty pch_rempty
@@ -385,6 +399,9 @@ thread safe)
 #define PCH_FREE(A, P) free(P)
 #endif
 
+/* A negative result means the first element comes out before the second. */
+typedef int (*pch_pq_cmp)(const void *, const void *);
+
 /* STB like header stuff */
 typedef struct
 {
@@ -405,6 +422,10 @@ typedef struct
             int factor;
             int current;
         } map;
+        struct
+        {
+            pch_pq_cmp cmp;
+        } priority;
     } meta;
 } pch_ds_hdr;
 
@@ -503,6 +524,31 @@ typedef struct
     for ((i) = 0; (i) < (slice).count && ((val) = ((type *)(slice).items)[(i)], 1); ++(i))
 
 #define pch_arr_clone(from, to, arena) ((to) = pch_da_clone((from), (to), sizeof(*(to)), (arena)))
+
+/* Pass a typed pointer lvalue initialized to NULL. NULL arena uses the default
+ * allocator. The comparator has the same signature and ordering as qsort. */
+#define pch_pqinit(q, arena_ptr, cmp)                                                                                  \
+    ((q) ? (q) : ((q) = pch_pq_new(sizeof(*(q)), (arena_ptr), (cmp))))
+
+/* Returns the current handle. On failure the queue and capacity are unchanged. */
+#define pch_pqreserve(q, needed) ((q) = pch_pq_grow((q), sizeof(*(q)), (needed)))
+
+/* Returns 0 if the queue is uninitialized or storage cannot grow. */
+#define pch_pqpush(q, item)                                                                                           \
+    (pch_pqreserve((q), pch_arr_count(q) + 1),                                                                         \
+     ((q) && pch_arr_count(q) < pch_arr_capacity(q))                                                                   \
+         ? ((q)[pch_arr_count(q)] = (item), pch_pq_pushed((q), sizeof(*(q))), 1)                                        \
+         : 0)
+
+#define pch_pqpeek(q) (pch_arr_count(q) ? &(q)[0] : NULL)
+#define pch_pqpop(q, output) pch_pq_remove((q), sizeof(*(q)), 0, (output))
+#define pch_pqremove(q, index, output) pch_pq_remove((q), sizeof(*(q)), (index), (output))
+#define pch_pqfix(q, index) pch_pq_fix((q), sizeof(*(q)), (index))
+#define pch_pqlen(q) pch_arr_count(q)
+#define pch_pqcap(q) ((q) ? pch_arr_capacity(q) : (size_t)0)
+#define pch_pqempty(q) pch_arrempty(q)
+#define pch_pqclear(q) ((void)((q) ? (PCH_DS_HDR(q)->count = 0) : 0))
+#define pch_pqfree(q) pch_arrfree(q)
 
 /* Comparator: Returns true if A is "better" (smaller f) than B
 For example:
@@ -685,8 +731,12 @@ For example:
 
 #define pch_mfree(da) ((void)((da) ? PCH_FREE(pch_arr_arena(da), PCH_DS_HDR(da)) : (void)0), (da) = NULL)
 
-static size_t pch_next_pow2(size_t n, size_t init);
 void *pch_ds_grow(void *da, size_t item_size, size_t needed, void *arena_ptr);
+void *pch_pq_new(size_t item_size, void *arena, pch_pq_cmp cmp);
+void *pch_pq_grow(void *queue, size_t item_size, size_t needed);
+void pch_pq_pushed(void *queue, size_t item_size);
+int pch_pq_remove(void *queue, size_t item_size, size_t index, void *output);
+int pch_pq_fix(void *queue, size_t item_size, size_t index);
 void *pch_ring_grow(void *ptr, size_t item_size, size_t needed, void *arena_ptr);
 void *pch_map_clear(void *da);
 int pch_map_del(void *da, size_t item_size, const void *key, size_t keysize, int mode);
@@ -706,21 +756,16 @@ void pch_map_put_impl(void *da, const void *key, size_t item_size, size_t keysiz
 
 static size_t pch_next_pow2(size_t n, size_t init)
 {
+    size_t shift;
     if (n == 0)
         return init;
     n--;
-    n |= n >> 1;
-    n |= n >> 2;
-    n |= n >> 4;
-    n |= n >> 8;
-    n |= n >> 16;
-    if (sizeof(size_t) > 4)
-        n |= n >> 32;
-    n++;
-    return n;
+    for (shift = 1; shift < sizeof(n) * CHAR_BIT; shift *= 2)
+        n |= n >> shift;
+    return n + 1;
 }
 
-void *pch_ds_grow(void *da, size_t item_size, size_t needed, void *arena_ptr)
+static void *pch_ds_try_grow(void *da, size_t item_size, size_t needed, void *arena_ptr)
 {
     size_t cap = pch_arr_capacity(da);
     size_t total_size;
@@ -732,12 +777,15 @@ void *pch_ds_grow(void *da, size_t item_size, size_t needed, void *arena_ptr)
         return da;
 
     cap = pch_next_pow2(needed, PCH_INIT_CAP);
+    if (!item_size || cap < needed || cap > (PCH_MAX_IDX - sizeof(*hdr)) / item_size)
+        return NULL;
 
     /* Calculate total size: Header + Data */
     total_size = sizeof(pch_ds_hdr) + (cap * item_size);
 
     h = PCH_REALLOC(arena_ptr, da ? PCH_DS_HDR(da) : NULL, total_size);
-    assert(h != NULL && "No more ram for you");
+    if (!h)
+        return NULL;
 
     hdr = (pch_ds_hdr *)h;
     hdr->capacity = cap;
@@ -748,6 +796,116 @@ void *pch_ds_grow(void *da, size_t item_size, size_t needed, void *arena_ptr)
     }
 
     return (void *)(hdr + 1);
+}
+
+void *pch_ds_grow(void *da, size_t item_size, size_t needed, void *arena_ptr)
+{
+    void *result = pch_ds_try_grow(da, item_size, needed, arena_ptr);
+    assert(result != NULL && "No more ram for you");
+    return result;
+}
+
+void *pch_pq_new(size_t item_size, void *arena, pch_pq_cmp cmp)
+{
+    void *queue;
+    if (!cmp)
+        return NULL;
+    queue = pch_ds_try_grow(NULL, item_size, PCH_INIT_CAP, arena);
+    if (queue)
+        PCH_DS_HDR(queue)->meta.priority.cmp = cmp;
+    return queue;
+}
+
+void *pch_pq_grow(void *queue, size_t item_size, size_t needed)
+{
+    void *grown;
+    if (!queue || needed <= pch_arr_capacity(queue))
+        return queue;
+    grown = pch_ds_try_grow(queue, item_size, needed, pch_arr_arena(queue));
+    return grown ? grown : queue;
+}
+
+static void pch_pq_swap(char *a, char *b, size_t size)
+{
+    char scratch[64];
+    size_t chunk;
+    while (size)
+    {
+        chunk = size < sizeof(scratch) ? size : sizeof(scratch);
+        memcpy(scratch, a, chunk);
+        memcpy(a, b, chunk);
+        memcpy(b, scratch, chunk);
+        a += chunk;
+        b += chunk;
+        size -= chunk;
+    }
+}
+
+static void pch_pq_sift_up(char *items, size_t size, size_t index, pch_pq_cmp cmp)
+{
+    size_t parent;
+    while (index)
+    {
+        parent = (index - 1) / 2;
+        if (cmp(items + index * size, items + parent * size) >= 0)
+            break;
+        pch_pq_swap(items + index * size, items + parent * size, size);
+        index = parent;
+    }
+}
+
+static int pch_pq_sift_down(char *items, size_t size, size_t count, size_t index, pch_pq_cmp cmp)
+{
+    size_t child, original = index;
+    while (index < count / 2)
+    {
+        child = 2 * index + 1;
+        if (child + 1 < count && cmp(items + (child + 1) * size, items + child * size) < 0)
+            ++child;
+        if (cmp(items + child * size, items + index * size) >= 0)
+            break;
+        pch_pq_swap(items + child * size, items + index * size, size);
+        index = child;
+    }
+    return index != original;
+}
+
+void pch_pq_pushed(void *queue, size_t item_size)
+{
+    pch_ds_hdr *header = PCH_DS_HDR(queue);
+    size_t index = header->count++;
+    pch_pq_sift_up(queue, item_size, index, header->meta.priority.cmp);
+}
+
+int pch_pq_fix(void *queue, size_t item_size, size_t index)
+{
+    pch_ds_hdr *header;
+    pch_pq_cmp cmp;
+    if (index >= pch_arr_count(queue))
+        return 0;
+    header = PCH_DS_HDR(queue);
+    cmp = header->meta.priority.cmp;
+    if (!pch_pq_sift_down(queue, item_size, header->count, index, cmp))
+        pch_pq_sift_up(queue, item_size, index, cmp);
+    return 1;
+}
+
+int pch_pq_remove(void *queue, size_t item_size, size_t index, void *output)
+{
+    char *items = queue, *item;
+    size_t last;
+    if (index >= pch_arr_count(queue))
+        return 0;
+    item = items + index * item_size;
+    if (output)
+        memcpy(output, item, item_size);
+    last = --PCH_DS_HDR(queue)->count;
+    if (index != last)
+    {
+        memcpy(item, items + last * item_size, item_size);
+        pch_pq_fix(queue, item_size, index);
+    }
+    return 1;
 }
 
 pch_slice pch_slice_from_array(void *da, size_t total_count, size_t item_size, size_t start, size_t requested_len)
