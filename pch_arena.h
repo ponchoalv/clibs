@@ -20,6 +20,11 @@ void *pch_arena_alloc(PchArena *arena, size_t size);
  * Growth may return a new address. Failure leaves the old allocation intact. */
 void *pch_arena_resize(PchArena *arena, void *memory, size_t used, size_t size);
 
+/* Allocator hooks for callers that cannot supply the old size. Use together.
+ * A NULL arena uses the heap. Arena allocations stay live until reset/destroy. */
+void *pch_arena_realloc(void *context, void *memory, size_t size);
+void pch_arena_free(void *context, void *memory);
+
 /* Reset keeps blocks for reuse. Destroy releases all blocks. */
 void pch_arena_reset(PchArena *arena);
 void pch_arena_destroy(PchArena *arena);
@@ -117,6 +122,26 @@ void *pch_arena_resize(PchArena *arena, void *memory, size_t used, size_t size)
     storage = pch_arena_alloc(arena, size);
     if (storage && used) memcpy(storage, memory, used);
     return storage;
+}
+
+void *pch_arena_realloc(void *context, void *memory, size_t size)
+{
+    PchArenaAlignment *header;
+    size_t used = 0;
+
+    if (!context) return realloc(memory, size);
+    if (!size || size > (size_t)-1 - sizeof(*header)) return NULL;
+    header = memory ? (PchArenaAlignment *)memory - 1 : NULL;
+    if (header) used = sizeof(*header) + header->size;
+    header = pch_arena_resize(context, header, used, sizeof(*header) + size);
+    if (!header) return NULL;
+    header->size = size;
+    return header + 1;
+}
+
+void pch_arena_free(void *context, void *memory)
+{
+    if (!context) free(memory);
 }
 
 void pch_arena_reset(PchArena *arena)

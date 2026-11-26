@@ -367,6 +367,15 @@ thread safe)
 #define PCH_MAP_BINARY_MODE 0
 #define PCH_MAP_STRING_MODE 1
 
+#ifdef PCH_DS_USE_ARENA
+#if defined(PCH_REALLOC) || defined(PCH_FREE)
+#error "PCH_DS_USE_ARENA and custom allocator hooks are mutually exclusive."
+#endif
+#include "pch_arena.h"
+#define PCH_REALLOC(A, P, N) pch_arena_realloc((A), (P), (N))
+#define PCH_FREE(A, P) pch_arena_free((A), (P))
+#endif
+
 #if defined(PCH_REALLOC) && !defined(PCH_FREE) || !defined(PCH_REALLOC) && defined(PCH_FREE)
 #error "You must define both PCH_REALLOC and PCH_FREE, or neither."
 #endif
@@ -383,6 +392,8 @@ typedef struct
     size_t count;
     size_t capacity;
     union {
+        /* Keep typed elements after the header aligned. */
+        long double alignment;
         struct
         {
             size_t head;
@@ -715,6 +726,7 @@ void *pch_ds_grow(void *da, size_t item_size, size_t needed, void *arena_ptr)
     size_t total_size;
     void *h;
     pch_ds_hdr *hdr;
+    int had_data = da != NULL;
 
     if (da != NULL && needed <= cap)
         return da;
@@ -729,7 +741,7 @@ void *pch_ds_grow(void *da, size_t item_size, size_t needed, void *arena_ptr)
 
     hdr = (pch_ds_hdr *)h;
     hdr->capacity = cap;
-    if (!da)
+    if (!had_data)
     {
         hdr->count = 0;
         hdr->arena = arena_ptr;
@@ -800,6 +812,7 @@ void *pch_ring_grow(void *da, size_t item_size, size_t needed, void *arena_ptr)
     size_t head;
     size_t tail;
     size_t total_bytes;
+    int had_data = da != NULL;
 
     old_hdr = (da != NULL) ? PCH_DS_HDR(da) : NULL;
     old_cap = pch_arr_capacity(da);
@@ -822,7 +835,7 @@ void *pch_ring_grow(void *da, size_t item_size, size_t needed, void *arena_ptr)
     new_ptr = (void *)((char *)new_hdr + sizeof(pch_ds_hdr));
     new_hdr->capacity = new_cap;
 
-    if (old_hdr == NULL)
+    if (!had_data)
     {
         new_hdr->arena = arena_ptr;
         new_hdr->count = 0;
@@ -874,117 +887,29 @@ size_t pch_update_ring_tail(void *da)
 
 /* Map Stuff starts here */
 
-// static size_t pch_hash_string(const char *str)
-// {
-//     size_t hash = PCH_FNV_OFFSET;
-
-//     while (*str)
-//     {
-//         hash ^= (size_t)(*str++);
-//         hash *= PCH_FNV_PRIME;
-//     }
-
-//     return (hash == 0) ? 1 : hash;
-// }
-
-static size_t pch_hash_string_fast(const char *str)
+static size_t pch_hash_bytes_fast(const void *data, size_t length)
 {
-    const size_t *word_ptr;
+    const unsigned char *bytes = data;
     size_t hash = PCH_FNV_OFFSET;
     size_t word;
 
-    /* 1. Handle unaligned preamble (optional but safer)
-     * If you want absolute raw speed and are on x64, you can skip this
-     * and cast directly, provided you don't crash on page boundaries.
-     * For safety, usually we consume bytes until aligned.
-     */
-    while (((size_t)str) & (sizeof(size_t) - 1))
+    while (length >= sizeof(word))
     {
-        if (!*str)
-            return (hash == 0) ? 1 : hash;
-        hash ^= (size_t)(*str++);
-        hash *= PCH_FNV_PRIME;
+        memcpy(&word, bytes, sizeof(word));
+        hash = (hash ^ word) * PCH_FNV_PRIME;
+        bytes += sizeof(word);
+        length -= sizeof(word);
     }
 
-    /* 2. Main Loop: Process 4 or 8 bytes at a time */
-    word_ptr = (const size_t *)str;
+    while (length--)
+        hash = (hash ^ *bytes++) * PCH_FNV_PRIME;
 
-    while (1)
-    {
-        word = *word_ptr; // Fetch next word
-
-        /* Check if this word contains a \0 terminator */
-        if (HAS_ZERO(word))
-        {
-            /* Found the end! Break to handle the final bytes */
-            break;
-        }
-
-        /* No null terminator, hash the whole word */
-        hash ^= word;
-        hash *= PCH_FNV_PRIME;
-        word_ptr++;
-    }
-
-    /* 3. Handle the final bytes (tail) */
-    /* We know the null terminator is inside 'word', need to find where */
-    str = (const char *)word_ptr;
-    while (*str)
-    {
-        hash ^= (size_t)(*str++);
-        hash *= PCH_FNV_PRIME;
-    }
-
-    return (hash == 0) ? 1 : hash;
+    return hash ? hash : 1;
 }
 
-// static size_t pch_hash_bytes(const void *da, size_t len)
-// {
-//     const unsigned char *p = (const unsigned char *)da;
-//     size_t hash = PCH_FNV_OFFSET;
-//     size_t i;
-
-//     for (i = 0; i < len; ++i)
-//     {
-//         hash ^= (size_t)p[i];
-//         hash *= PCH_FNV_PRIME;
-//     }
-//     return (hash == 0) ? 1 : hash;
-// }
-
-/* * A very fast word-at-a-time hash (similar to FxHash).
- * Much faster than FNV because it consumes sizeof(size_t) bytes per step.
- */
-static size_t pch_hash_bytes_fast(const void *da, size_t len)
+static size_t pch_hash_string_fast(const char *text)
 {
-    const size_t *words = (const size_t *)da;
-    const unsigned char *p;
-    size_t hash = PCH_FNV_OFFSET;
-    size_t word_count = len / sizeof(size_t);
-    size_t i;
-
-    /* 1. Process standard word-sized chunks */
-    for (i = 0; i < word_count; ++i)
-    {
-        /* * Combine the hash with the whole word.
-         * Using a rotate here (if available) is even better,
-         * but standard XOR-MUL is very fast.
-         */
-        hash ^= words[i];
-        hash *= PCH_FNV_PRIME;
-    }
-
-    /* 2. Handle remaining bytes (the "tail") */
-    p = (const unsigned char *)(words + word_count);
-    i = len % sizeof(size_t);
-
-    while (i--)
-    {
-        hash ^= (size_t)(*p++);
-        hash *= PCH_FNV_PRIME;
-    }
-
-    return (hash == 0) ? 1 : hash;
+    return pch_hash_bytes_fast(text, strlen(text));
 }
 
 static int pch_is_key_equal(void *da, const void *key, size_t item_size, size_t keysize, int mode, int index)
@@ -994,7 +919,8 @@ static int pch_is_key_equal(void *da, const void *key, size_t item_size, size_t 
     if (mode >= PCH_MAP_STRING_MODE)
     {
         const char *search_key = (const char *)key;
-        const char *entry_key = *(const char **)entry;
+        const char *entry_key;
+        memcpy(&entry_key, entry, sizeof(entry_key));
         return (entry_key && search_key) ? 0 == (strcmp(search_key, entry_key)) : 0;
     }
     else
@@ -1005,10 +931,13 @@ static int pch_is_key_equal(void *da, const void *key, size_t item_size, size_t 
 
 static size_t pch_hash_fn(const void *ptr, size_t keysize, int mode)
 {
+    const char *key;
     if (mode >= PCH_MAP_STRING_MODE)
-        return pch_hash_string_fast(*(char **)ptr);
-    else
-        return pch_hash_bytes_fast(ptr, keysize);
+    {
+        memcpy(&key, ptr, sizeof(key));
+        return pch_hash_string_fast(key);
+    }
+    return pch_hash_bytes_fast(ptr, keysize);
 }
 
 static void pch_map_rehash(void *da, size_t item_size, size_t keysize, int mode)
@@ -1059,6 +988,7 @@ void *pch_map_grow(void *da, size_t item_size, size_t needed, size_t keysize, in
     size_t total_size;
     void *new_da;
     void *h;
+    int had_data = da != NULL;
 
     new_cap = (needed < PCH_MAP_INIT_CAP) ? PCH_MAP_INIT_CAP : needed;
     new_cap = pch_next_pow2(new_cap, PCH_MAP_INIT_CAP);
@@ -1086,7 +1016,7 @@ void *pch_map_grow(void *da, size_t item_size, size_t needed, size_t keysize, in
     current_h->meta.map.current = -1;
 
     /* 5. Rehash if old data exists */
-    if (da)
+    if (had_data)
     {
         pch_map_rehash(new_da, item_size, keysize, mode);
     }
@@ -1263,33 +1193,24 @@ int pch_map_del(void *da, size_t item_size, const void *key, size_t keysize, int
     }
     else
     {
-        memmove((char *)da + item_size * i, (char *)da + item_size * final_index, item_size);
-        hash = (mode >= PCH_MAP_STRING_MODE) ? pch_hash_string_fast(*(char **)((char *)da + item_size * i))
-                                             : pch_hash_bytes_fast((char *)da + item_size * i, keysize);
+        char *last = (char *)da + item_size * final_index;
+        hash = pch_hash_fn(last, keysize, mode);
         idx = hash & mask;
+        start = idx;
 
-        while (slots[idx].hash != 0 || slots[idx].tomblestone != 0)
+        do
         {
-            if (slots[idx].hash == hash)
+            if (slots[idx].hash == hash && slots[idx].index == final_index)
             {
-                if ((mode >= PCH_MAP_STRING_MODE)
-                        ? pch_is_key_equal(da, *(char **)(char *)da + item_size * i, item_size, keysize, mode,
-                                           slots[idx].index)
-                        : pch_is_key_equal(da, (char *)da + item_size * i, item_size, keysize, mode, slots[idx].index))
-                {
-                    /* i = slots[idx].index; */
-                    slots[idx].index = i;
-                    /* slots[idx].hash = hash; */
-                    h->count--;
-                    return 1;
-                }
+                memcpy((char *)da + item_size * i, last, item_size);
+                slots[idx].index = i;
+                h->count--;
+                return 1;
             }
             idx = (idx + 1) & mask;
-        }
+        } while (idx != start && (slots[idx].hash || slots[idx].tomblestone));
     }
 
-    printf("we reach unreachable\n");
-    /* Shouldn't be reach */
     return 0;
 }
 

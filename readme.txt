@@ -21,3 +21,23 @@ all blocks.
 
 Build the standalone test with:
   cc -std=gnu89 -Wall -Wextra -Werror test_pch_arena.c -o test_pch_arena
+
+Using a growable arena with pch_ds.h
+-----------------------------------
+
+Define PCH_DS_USE_ARENA before including pch_ds.h in each translation
+unit that uses pch_ds. Define PCH_ARENA_IMPLEMENTATION and
+PCH_DS_IMPLEMENTATION in one translation unit each, as usual.
+
+Pass a pointer to a zero-initialized PchArena to arrinit, rinit,
+bhinit or shinit. Passing NULL uses the heap, so arena-backed and
+heap-backed collections can coexist. Keep the arena at the same
+address while pch_ds collections reference it. Growth preserves the
+collection's contents and can change the collection's address.
+
+arrfree, rfree and mfree clear the handle. Reset the arena to reuse
+storage, or destroy it to free storage. Reinitialize collection handles
+before using them again after a reset.
+
+Build the integration test with:
+  cc -std=gnu89 -Wall -Wextra -Werror test_pch_ds_arena.c -o test_pch_ds_arena
