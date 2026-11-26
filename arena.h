@@ -38,6 +38,14 @@ static const long mega_byte = 1 << 20;
 #endif /* ARENA_H */
 
 #ifdef ARENA_IMPLEMENTATION
+#if defined(__SANITIZE_ADDRESS__)
+#define ARENA_WITH_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define ARENA_WITH_ASAN 1
+#endif
+#endif
+
 /**
  * @brief Create a new arena
  * @param capacity Size of the base memory region in bytes
@@ -101,7 +109,7 @@ Arena arena_scratch_create(Arena *self, long capacity) {
  * of memory
  */
 void *arena_malloc(Arena *self, long size, long align) {
-#if __has_feature(address_sanitizer) || defined(__SANITIZE_ADDRESS__)
+#ifdef ARENA_WITH_ASAN
   return malloc(size);
 #endif
   long padding = -(uintptr_t)self->begin & (align - 1);
@@ -136,7 +144,7 @@ void *arena_calloc(Arena *self, long count, long size, long align) {
  * be unchanged
  */
 void *arena_realloc(Arena *self, void *ptr, long size, long align) {
-#if __has_feature(address_sanitizer) || defined(__SANITIZE_ADDRESS__)
+#ifdef ARENA_WITH_ASAN
   return realloc(ptr, size);
 #endif
   if (!ptr) {
@@ -197,8 +205,9 @@ void arena_scratch_destroy(Arena *self, Arena scratch) {
  */
 void arena_destroy(Arena *self) { free(self->data); }
 
-#if __has_feature(address_sanitizer) || defined(__SANITIZE_ADDRESS__)
+#ifdef ARENA_WITH_ASAN
 const char *__asan_default_options() { return "detect_leaks=0"; }
+#undef ARENA_WITH_ASAN
 #endif
 
 #endif /* ARENA_IMPLEMENTATION */

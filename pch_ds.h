@@ -22,20 +22,34 @@
 arena_realloc and a free (if you don't care about freeing within the
 arena you could pass ((void)0), but should be defined)
 
+#include <stdio.h>
+
 #define ARENA_IMPLEMENTATION
 #include "arena.h"
 
-#define PCH_REALLOC(A, P, N) arena_realloc(A, P, N, sizeof(void *))
-#define PCH_FREE(A, P) ((void)0)
+#define PCH_REALLOC(A, P, N) \
+    ((A) ? arena_realloc((A), (P), (N), (long)PCH_DS_ALLOC_ALIGNMENT) : realloc((P), (N)))
+#define PCH_FREE(A, P) ((A) ? (void)0 : free(P))
 
 #define PCH_DS_IMPLEMENTATION
 #include "pch_ds.h"
-sizeof(*(P)),__alignof__(*(P)))
 
-arrinit(xs, &arena);
-arrforeach(i, val, xs)
+int main(void)
 {
-    printf("the val at index %zu is %d", i, val);
+    Arena arena = arena_create(4096);
+    int *xs = NULL;
+    int val;
+    size_t i;
+
+    arrinit(xs, &arena);
+    arrpush(xs, 69);
+    arrforeach(i, val, xs)
+    {
+        printf("the val at index %lu is %d\n", (unsigned long)i, val);
+    }
+    arrfree(xs);
+    arena_destroy(&arena);
+    return 0;
 }
 
 
@@ -472,6 +486,15 @@ typedef struct
         } priority;
     } meta;
 } pch_ds_hdr;
+
+struct pch_ds_alloc_alignment {
+    char padding;
+    pch_ds_hdr header;
+};
+
+/* Custom allocator hooks must align allocation addresses to this boundary.
+ * Use the member offset so GNU89 callers need no alignment operator. */
+#define PCH_DS_ALLOC_ALIGNMENT offsetof(struct pch_ds_alloc_alignment, header)
 
 typedef struct
 {
